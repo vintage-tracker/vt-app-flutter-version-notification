@@ -1,0 +1,13 @@
+{
+  "repositories": [
+    {
+      "name": "example_app",
+      "description": "サンプルFlutterアプリ",
+      "url": "https://github.com/your-org/example_app"
+    }
+  ],
+  "settings": {
+    "defaultNotifyChannel": "C0984UGV52Q",
+    "includeDevDeps": true
+  }
+}

@@ -1,0 +1,190 @@
+name: Multi-Repository App Version Check
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+on:
+  schedule:
+    - cron: "0 0 * * 1" # 毎週月曜日の朝9時 (JST) = UTC 0時
+  workflow_dispatch:
+    inputs:
+      use_config_file:
+        description: "Use repositories.json config file"
+        required: false
+        default: true
+
+        type: boolean
+      repositories:
+        description: "リポジトリリスト (JSON配列形式) - use_config_fileがfalseの場合のみ使用"
+        required: false
+        default: '[{"name":"main-app","path":"./"},{"name":"admin-panel","path":"../admin-panel"}]'
+        type: string
+      notify_channel:
+        description: "Slack notification channel (空の場合は設定ファイルから取得)"
+        required: false
+        default: ""
+        type: string
+      include_dev_deps:
+        description: "Include dev dependencies"
+        required: false
+        default: true
+        type: boolean
+      security_scan:
+        description: "Perform security scan"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  check-multiple-repositories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ github.token }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.35.1"  # Use latest stable version for analysis environment
+          cache: true
+
+      - name: Install MCP Server dependencies
+        run: npm install
+
+      - name: Build MCP Server
+        run: npm run build
+
+      - name: Load repository configuration
+        id: load-config
+        run: |
+          if [[ "${{ github.event.inputs.use_config_file || 'true' }}" == "true" ]]; then
+            echo "Using repositories.json config file"
+            REPOSITORIES=$(jq -c '.repositories' repositories.json)
+            CHANNEL=$(jq -r '.settings.defaultNotifyChannel' repositories.json)
+            if [[ "${{ github.event.inputs.notify_channel }}" != "" ]]; then
+              CHANNEL="${{ github.event.inputs.notify_channel }}"
+            fi
+          else
+            echo "Using manual input"
+            REPOSITORIES='${{ github.event.inputs.repositories || '[{"name":"main-app","path":"./"}]' }}'
+            CHANNEL="${{ github.event.inputs.notify_channel || '#flutter-updates' }}"
+          fi
+          
+          echo "repositories=$REPOSITORIES" >> $GITHUB_OUTPUT
+          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
+          echo "Repositories: $REPOSITORIES"
+          echo "Channel: $CHANNEL"
+
+      - name: Check multiple Flutter repositories
+        id: check-repos
+        timeout-minutes: 8
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
+          DEFAULT_SLACK_CHANNEL: ${{ vars.DEFAULT_SLACK_CHANNEL || 'C0984UGV52Q' }}
+          PUB_DEV_API_TIMEOUT: ${{ vars.PUB_DEV_API_TIMEOUT || '30000' }}
+          GITHUB_API_TIMEOUT: ${{ vars.API_TIMEOUT_GITHUB || '30000' }}
+        run: |
+          echo "Executing MCP server with check_multiple_repositories command..."
+          echo "Debug: repositories output = ${{ steps.load-config.outputs.repositories }}"
+          echo "Debug: channel output = ${{ steps.load-config.outputs.channel }}"
+          REPOSITORIES='${{ steps.load-config.outputs.repositories }}'
+          CHANNEL='${{ steps.load-config.outputs.channel }}'
+          INCLUDE_DEV_DEPS='${{ github.event.inputs.include_dev_deps || true }}'
+          SECURITY_SCAN='${{ github.event.inputs.security_scan || true }}'
+          echo "Debug: REPOSITORIES variable = $REPOSITORIES"
+          echo "Debug: CHANNEL variable = $CHANNEL"
+          
+          env REPOSITORIES="$REPOSITORIES" CHANNEL="$CHANNEL" INCLUDE_DEV_DEPS="$INCLUDE_DEV_DEPS" SECURITY_SCAN="$SECURITY_SCAN" node -e "
+          const { spawn } = require('child_process');
+          
+          const serverProcess = spawn('node', ['dist/server.js'], {
+            stdio: ['pipe', 'pipe', 'inherit'],
+            env: process.env
+          });
+          
+          console.log('Debug: process.env.REPOSITORIES =', process.env.REPOSITORIES);
+          console.log('Debug: process.env.CHANNEL =', process.env.CHANNEL);
+          
+          const repositories = JSON.parse(process.env.REPOSITORIES || '[]');
+          const channel = process.env.CHANNEL || 'unknown';
+          const includeDevDeps = process.env.INCLUDE_DEV_DEPS === 'true';
+          const securityScan = process.env.SECURITY_SCAN === 'true';
+          
+          const request = {
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: {
+              name: 'check_multiple_repositories',
+              arguments: {
+                repositories: repositories,
+                notifyChannel: channel,
+                includeDevDeps: includeDevDeps,
+                securityScan: securityScan
+              }
+            }
+          };
+          
+          let response = '';
+          let processCompleted = false;
+          
+          // Custom timeout for the entire process
+          const processTimeout = setTimeout(() => {
+            if (!processCompleted) {
+              console.error('Process timed out after 6 minutes');
+              serverProcess.kill('SIGTERM');
+              process.exit(124);
+            }
+          }, 6 * 60 * 1000); // 6 minutes
+          
+          // Progress logging every minute
+          const progressInterval = setInterval(() => {
+            if (!processCompleted) {
+              console.log('Still waiting for server process... Response length so far:', response.length);
+            }
+          }, 60 * 1000); // Every minute
+          
+          serverProcess.stdout.on('data', (data) => {
+            response += data.toString();
+            console.log('Received data:', data.toString().slice(0, 200) + '...');
+          });
+          
+          serverProcess.on('error', (err) => {
+            console.error('Server process error:', err);
+            clearTimeout(processTimeout);
+            clearInterval(progressInterval);
+            process.exit(1);
+          });
+          
+          serverProcess.on('close', (code) => {
+            processCompleted = true;
+            clearTimeout(processTimeout);
+            clearInterval(progressInterval);
+            console.log('MCP Server Response:');
+            console.log(response);
+            console.log('Response End');
+            console.log('Process exited with code:', code);
+            process.exit(code || 0);
+          });
+          
+          // Send request after a short delay
+          setTimeout(() => {
+            console.log('Sending JSON-RPC request...');
+            serverProcess.stdin.write(JSON.stringify(request) + '\\n');
+            serverProcess.stdin.end();
+          }, 1000);
+          "
+

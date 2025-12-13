@@ -1,0 +1,73 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(yamllint:*)",
+      "Bash(node:*)",
+      "Bash(rm:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(npm run test:thread:*)",
+      "Bash(tsx test-thread.ts:*)",
+      "Bash(npx tsx:*)",
+      "Bash(npm run typecheck:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git rm:*)",
+      "Bash(ls:*)",
+      "Bash(npm install:*)",
+      "Bash(curl:*)",
+      "Bash(npm run check-progress:*)",
+      "Bash(find:*)",
+      "Bash(npm run build:*)",
+      "Bash(git log:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(npm update:*)",
+      "Bash(npm run check-single:*)",
+      "Bash(timeout:*)",
+      "Bash(gtimeout:*)",
+      "Bash(chmod:*)",
+      "Bash(cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(./check-with-progress.sh:*)",
+      "Bash(mv:*)",
+      "Bash(git push:*)",
+      "Bash(grep:*)",
+      "Bash(flutter:*)",
+      "Bash(fvm flutter:*)",
+      "Bash(fvm list:*)"
+    ],
+    "deny": [],
+    "defaultMode": "acceptEdits"
+  },
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat | jq -r '\"display notification \\\"\" + .message + \"\\\" with title \\\"\" + .title + \"\\\" sound name \\\"Glass\\\"\"' | xargs -I {} osascript -e '{}'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "osascript -e 'display notification \"作業が完了しました。\" with title \"Claude Code\" sound name \"Glass\"'"
+          }
+        ]
+      }
+    ]
+  }
+}

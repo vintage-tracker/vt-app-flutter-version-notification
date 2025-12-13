@@ -1,0 +1,32 @@
+{
+  "name": "flutter-version-notification",
+  "version": "1.0.0",
+  "description": "GitHub ActionsでFlutterバージョンとパッケージをチェックしてSlackに通知",
+  "main": "dist/check.js",
+  "scripts": {
+    "build": "tsc",
+    "check": "node dist/check.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "flutter",
+    "dependencies",
+    "version-management",
+    "slack",
+    "notifications",
+    "github-actions"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@slack/web-api": "^7.9.3",
+    "axios": "^1.6.0",
+    "semver": "^7.5.4",
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/semver": "^7.5.0",
+    "typescript": "^5.0.0"
+  }
+}

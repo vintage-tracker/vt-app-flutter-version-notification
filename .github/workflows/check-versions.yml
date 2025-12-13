@@ -1,0 +1,35 @@
+name: Flutter Version Check
+
+on:
+  schedule:
+    # 毎週月曜日 9:00 JST (UTC 0:00)
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build TypeScript
+        run: npm run build
+      
+      - name: Check Flutter versions and packages
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORIES_CONFIG: ${{ github.workspace }}/repositories.json
+        run: node dist/check.js
+
