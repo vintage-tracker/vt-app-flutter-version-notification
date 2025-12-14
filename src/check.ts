@@ -320,6 +320,33 @@ async function checkRepository(
 }
 
 /**
+ * バージョン更新の種類を判定（メジャー/マイナー/パッチ）
+ */
+function getVersionUpdateType(currentVersion: string, latestVersion: string): 'major' | 'minor' | 'patch' | null {
+  try {
+    const baseVersion = currentVersion.replace(/^[\^~>=<\s]+/, '').split(/\s+/)[0];
+    const current = semver.valid(baseVersion);
+    const latest = semver.valid(latestVersion);
+    
+    if (!current || !latest) {
+      return null;
+    }
+    
+    if (semver.major(latest) > semver.major(current)) {
+      return 'major';
+    } else if (semver.minor(latest) > semver.minor(current)) {
+      return 'minor';
+    } else if (semver.patch(latest) > semver.patch(current)) {
+      return 'patch';
+    }
+    
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Excelファイルを生成
  */
 async function generateExcelFile(results: CheckResult[]): Promise<Buffer> {
@@ -332,7 +359,6 @@ async function generateExcelFile(results: CheckResult[]): Promise<Buffer> {
     { header: 'パッケージ名', key: 'package', width: 30 },
     { header: '現在のバージョン', key: 'current', width: 20 },
     { header: '最新バージョン', key: 'latest', width: 20 },
-    { header: '更新可能', key: 'updateAvailable', width: 12 },
     { header: 'Flutterバージョン', key: 'flutter', width: 25 }
   ];
   
@@ -353,7 +379,6 @@ async function generateExcelFile(results: CheckResult[]): Promise<Buffer> {
         package: 'エラー',
         current: result.error,
         latest: '',
-        updateAvailable: '',
         flutter: ''
       });
       worksheet.getRow(rowNumber).font = { color: { argb: 'FFFF0000' } };
@@ -361,19 +386,22 @@ async function generateExcelFile(results: CheckResult[]): Promise<Buffer> {
       continue;
     }
     
-    // Flutterバージョン情報
+    // Flutterバージョン情報（更新の有無に関わらず表示）
+    worksheet.addRow({
+      repository: result.repository.name,
+      package: 'Flutter SDK',
+      current: result.flutter.current,
+      latest: result.flutter.latest,
+      flutter: result.flutter.updateAvailable 
+        ? `${result.flutter.current} → ${result.flutter.latest}`
+        : result.flutter.current
+    });
+    
+    // 更新可能な場合はオレンジ色、最新の場合は通常の色
     if (result.flutter.updateAvailable) {
-      worksheet.addRow({
-        repository: result.repository.name,
-        package: 'Flutter SDK',
-        current: result.flutter.current,
-        latest: result.flutter.latest,
-        updateAvailable: 'はい',
-        flutter: `${result.flutter.current} → ${result.flutter.latest}`
-      });
       worksheet.getRow(rowNumber).font = { color: { argb: 'FFFF6600' } };
-      rowNumber++;
     }
+    rowNumber++;
     
     // パッケージ情報
     for (const pkg of result.packages) {
@@ -382,12 +410,24 @@ async function generateExcelFile(results: CheckResult[]): Promise<Buffer> {
         package: pkg.name,
         current: pkg.current,
         latest: pkg.latest,
-        updateAvailable: pkg.updateAvailable ? 'はい' : 'いいえ',
         flutter: ''
       });
       
+      // 更新可能な場合のみ色分け
       if (pkg.updateAvailable) {
-        worksheet.getRow(rowNumber).font = { color: { argb: 'FF0066CC' } };
+        const updateType = getVersionUpdateType(pkg.current, pkg.latest);
+        const row = worksheet.getRow(rowNumber);
+        
+        if (updateType === 'major') {
+          // メジャーバージョンアップ: 赤色
+          row.font = { color: { argb: 'FFFF0000' } };
+        } else if (updateType === 'minor' || updateType === 'patch') {
+          // マイナー/パッチバージョンアップ: 青色
+          row.font = { color: { argb: 'FF0066CC' } };
+        } else {
+          // バージョン判定できない場合: 青色（デフォルト）
+          row.font = { color: { argb: 'FF0066CC' } };
+        }
       }
       rowNumber++;
     }
@@ -404,7 +444,8 @@ async function generateExcelFile(results: CheckResult[]): Promise<Buffer> {
 async function sendSlackNotification(
   channel: string,
   results: CheckResult[],
-  slackToken: string
+  slackToken: string,
+  latestFlutter: string
 ): Promise<void> {
   const slack = new WebClient(slackToken);
   
@@ -413,6 +454,19 @@ async function sendSlackNotification(
   const hasUpdates = results.some(r => 
     !r.error && (r.flutter.updateAvailable || r.packages.some(p => p.updateAvailable))
   );
+  
+  // 各リポジトリのFlutterバージョン情報を収集
+  const flutterVersions: Array<{ repo: string; current: string; latest: string; updateAvailable: boolean }> = [];
+  for (const result of results) {
+    if (!result.error) {
+      flutterVersions.push({
+        repo: result.repository.name,
+        current: result.flutter.current,
+        latest: result.flutter.latest,
+        updateAvailable: result.flutter.updateAvailable
+      });
+    }
+  }
   
   const blocks: any[] = [
     {
@@ -436,10 +490,35 @@ async function sendSlackNotification(
         {
           type: 'mrkdwn',
           text: `*失敗*\n${failedChecks}個`
+        },
+        {
+          type: 'mrkdwn',
+          text: `*Flutter SDK最新版*\n${latestFlutter}`
         }
       ]
     }
   ];
+  
+  // Flutterバージョン情報を表示
+  if (flutterVersions.length > 0) {
+    const flutterVersionText = flutterVersions
+      .map(fv => {
+        if (fv.updateAvailable) {
+          return `• ${fv.repo}: ${fv.current} → ${fv.latest} 🔄`;
+        } else {
+          return `• ${fv.repo}: ${fv.current} ✅`;
+        }
+      })
+      .join('\n');
+    
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Flutter SDKバージョン*\n${flutterVersionText}`
+      }
+    });
+  }
   
   // 更新があるリポジトリの詳細
   for (const result of results) {
@@ -469,7 +548,6 @@ async function sendSlackNotification(
         text: {
           type: 'mrkdwn',
           text: `*${result.repository.name}*\n` +
-            (hasFlutterUpdate ? `Flutter: ${result.flutter.current} → ${result.flutter.latest}\n` : '') +
             (outdatedPackages.length > 0 
               ? `更新可能パッケージ (${outdatedPackages.length}個):\n${packageList}${outdatedPackages.length > 5 ? `\n... 他 ${outdatedPackages.length - 5}個` : ''}`
               : '')
@@ -504,20 +582,39 @@ async function sendSlackNotification(
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
     const filename = `flutter-dependency-check-${timestamp}.xlsx`;
     
-    const uploadOptions: any = {
-      channel_id: channel,
-      file: excelBuffer,
+    // FormDataを使って直接Slack APIにアップロード
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('file', excelBuffer, {
       filename: filename,
-      title: 'Flutter依存関係チェック結果',
-      initial_comment: '📊 詳細なチェック結果をExcelファイルで添付しました。'
-    };
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    form.append('channels', channel);
+    form.append('title', 'Flutter依存関係チェック結果');
+    form.append('initial_comment', '📊 詳細なチェック結果をExcelファイルで添付しました。');
     
     // メッセージのタイムスタンプが存在する場合はスレッドに添付
     if (messageResponse.ts) {
-      uploadOptions.thread_ts = messageResponse.ts;
+      form.append('thread_ts', messageResponse.ts);
     }
     
-    await slack.files.uploadV2(uploadOptions);
+    const uploadResponse = await axios.post(
+      'https://slack.com/api/files.upload',
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          'Authorization': `Bearer ${slackToken}`
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+      }
+    );
+    
+    if (!uploadResponse.data.ok) {
+      throw new Error(uploadResponse.data.error || 'Failed to upload file');
+    }
+    
     console.log('✅ Excel file uploaded to Slack thread');
   } catch (error) {
     console.error('❌ Failed to upload Excel file:', error instanceof Error ? error.message : String(error));
@@ -564,7 +661,7 @@ async function main() {
     console.error('Error: SLACK_CHANNEL environment variable is required');
     process.exit(1);
   }
-  await sendSlackNotification(channel, results, slackToken);
+  await sendSlackNotification(channel, results, slackToken, latestFlutter);
   console.log('✅ Done!');
 }
 
