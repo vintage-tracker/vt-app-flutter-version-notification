@@ -1,9 +1,9 @@
 import * as yaml from 'yaml';
 import { Repository, CheckResult, FlutterVersion, PackageInfo } from '../types/dependency-types';
 import { getLatestFlutterVersion } from './flutter-api.service';
-import { getPubspecFromGitHub } from './github-api.service';
+import { getPubspecFromGitHub, getFvmrcFromGitHub } from './github-api.service';
 import { getLatestPackageVersion } from './pub-dev-api.service';
-import { getFlutterVersionFromPubspec, extractDependencies } from '../utils/pubspec-utils';
+import { getFlutterVersionFromPubspec, getFlutterVersionFromFvmrc, extractDependencies } from '../utils/pubspec-utils';
 import { isUpdateAvailable } from '../utils/version-utils';
 
 /**
@@ -15,6 +15,23 @@ export async function checkRepository(
   githubToken?: string
 ): Promise<CheckResult> {
   try {
+    // まず.fvmrcを確認
+    let currentFlutter: string | null = null;
+    console.log(`  📥 Checking .fvmrc from ${repository.url}...`);
+    const fvmrcContent = await getFvmrcFromGitHub(repository.url, githubToken);
+    if (fvmrcContent) {
+      console.log(`  ✅ .fvmrc fetched (${fvmrcContent.length} bytes)`);
+      currentFlutter = getFlutterVersionFromFvmrc(fvmrcContent);
+      if (currentFlutter) {
+        console.log(`  ✅ Flutter version from .fvmrc: ${currentFlutter}`);
+      } else {
+        console.log(`  ⚠️  Could not parse Flutter version from .fvmrc`);
+      }
+    } else {
+      console.log(`  ℹ️  .fvmrc not found, checking pubspec.yaml...`);
+    }
+    
+    // pubspec.yamlを取得
     console.log(`  📥 Fetching pubspec.yaml from ${repository.url}...`);
     const pubspecContent = await getPubspecFromGitHub(repository.url, githubToken);
     console.log(`  ✅ pubspec.yaml fetched (${pubspecContent.length} bytes)`);
@@ -25,7 +42,20 @@ export async function checkRepository(
     }
     console.log(`  ✅ pubspec.yaml parsed successfully`);
     
-    const currentFlutter = getFlutterVersionFromPubspec(pubspecContent) || latestFlutter;
+    // .fvmrcから取得できなかった場合はpubspec.yamlから取得
+    if (!currentFlutter) {
+      currentFlutter = getFlutterVersionFromPubspec(pubspecContent);
+      if (currentFlutter) {
+        console.log(`  ✅ Flutter version from pubspec.yaml: ${currentFlutter}`);
+      }
+    }
+    
+    // どちらからも取得できなかった場合は最新バージョンを使用
+    if (!currentFlutter) {
+      console.log(`  ⚠️  Could not determine Flutter version, using latest: ${latestFlutter}`);
+      currentFlutter = latestFlutter;
+    }
+    
     const flutter: FlutterVersion = {
       current: currentFlutter,
       latest: latestFlutter,

@@ -1,6 +1,29 @@
 import * as yaml from 'yaml';
 
 /**
+ * .fvmrcからFlutterバージョンを取得
+ */
+export function getFlutterVersionFromFvmrc(fvmrcContent: string): string | null {
+  try {
+    const lines = fvmrcContent.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // flutter: "3.24.0" または flutter: 3.24.0 の形式をサポート
+      if (trimmed.startsWith('flutter:')) {
+        const flutterValue = trimmed.replace('flutter:', '').trim().replace(/['"]/g, '');
+        const versionMatch = flutterValue.match(/(\d+\.\d+\.\d+)/);
+        if (versionMatch) {
+          return versionMatch[1];
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * pubspec.yamlからFlutterバージョンを取得
  */
 export function getFlutterVersionFromPubspec(pubspecContent: string): string | null {
