@@ -622,58 +622,32 @@ async function sendSlackNotification(
     
     const uploadedFile = completeUploadResponse.files[0];
     
-    // Step 4: スレッドにファイル情報を投稿
-    if (messageResponse.ts) {
-      await slack.chat.postMessage({
-        channel: channel,
-        thread_ts: messageResponse.ts,
-        text: '📊 詳細なチェック結果をExcelファイルで添付しました。',
-        blocks: [
-          {
-            type: 'section',
-            text: {
-              type: 'mrkdwn',
-              text: '📊 詳細なチェック結果をExcelファイルで添付しました。'
-            },
-            accessory: uploadedFile.permalink 
-              ? {
-                  type: 'button',
-                  text: {
-                    type: 'plain_text',
-                    text: 'ファイルを表示'
-                  },
-                  url: uploadedFile.permalink
-                }
-              : undefined
+    // Step 4: スレッドにファイルを添付して投稿
+    const postMessageOptions: any = {
+      channel: channel,
+      text: '📊 詳細なチェック結果をExcelファイルで添付しました。',
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: '📊 詳細なチェック結果をExcelファイルで添付しました。'
           }
-        ]
-      });
-    } else {
-      // スレッドがない場合は、ファイルのコメントとして投稿
-      await slack.chat.postMessage({
-        channel: channel,
-        text: '📊 詳細なチェック結果をExcelファイルで添付しました。',
-        blocks: [
-          {
-            type: 'section',
-            text: {
-              type: 'mrkdwn',
-              text: '📊 詳細なチェック結果をExcelファイルで添付しました。'
-            },
-            accessory: uploadedFile.permalink
-              ? {
-                  type: 'button',
-                  text: {
-                    type: 'plain_text',
-                    text: 'ファイルを表示'
-                  },
-                  url: uploadedFile.permalink
-                }
-              : undefined
-          }
-        ]
-      });
+        }
+      ]
+    };
+    
+    // ファイルを添付（filesパラメータを使用）
+    if (uploadedFile.id) {
+      postMessageOptions.files = [uploadedFile.id];
     }
+    
+    // メッセージのタイムスタンプが存在する場合はスレッドに投稿
+    if (messageResponse.ts) {
+      postMessageOptions.thread_ts = messageResponse.ts;
+    }
+    
+    await slack.chat.postMessage(postMessageOptions);
     
     console.log('✅ Excel file uploaded to Slack thread');
   } catch (error) {
