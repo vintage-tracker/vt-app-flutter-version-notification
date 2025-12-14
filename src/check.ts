@@ -140,19 +140,38 @@ async function getPubspecFromGitHub(repoUrl: string, githubToken?: string): Prom
 function extractDependencies(pubspec: any, includeDevDeps: boolean): Array<{ name: string; version: string }> {
   const deps: Array<{ name: string; version: string }> = [];
   
+  if (!pubspec) {
+    console.warn('  ⚠️  pubspec is null or undefined');
+    return deps;
+  }
+  
   if (pubspec.dependencies) {
     Object.entries(pubspec.dependencies).forEach(([name, spec]: [string, any]) => {
       if (name === 'flutter' || name === 'flutter_test') return;
-      const version = typeof spec === 'string' ? spec : spec.version || 'any';
-      deps.push({ name, version });
+      let version: string;
+      if (typeof spec === 'string') {
+        version = spec;
+      } else if (spec && typeof spec === 'object') {
+        version = spec.version || 'any';
+      } else {
+        version = 'any';
+      }
+      deps.push({ name, version: version || 'any' });
     });
   }
   
   if (includeDevDeps && pubspec.dev_dependencies) {
     Object.entries(pubspec.dev_dependencies).forEach(([name, spec]: [string, any]) => {
       if (name === 'flutter' || name === 'flutter_test') return;
-      const version = typeof spec === 'string' ? spec : spec.version || 'any';
-      deps.push({ name, version });
+      let version: string;
+      if (typeof spec === 'string') {
+        version = spec;
+      } else if (spec && typeof spec === 'object') {
+        version = spec.version || 'any';
+      } else {
+        version = 'any';
+      }
+      deps.push({ name, version: version || 'any' });
     });
   }
   
@@ -168,12 +187,29 @@ async function getLatestPackageVersion(packageName: string): Promise<string> {
       `https://pub.dev/api/packages/${packageName}`,
       { timeout: 10000 }
     );
-    if (!response.data?.latest?.version) {
-      throw new Error(`No version information found for ${packageName}`);
+    
+    if (!response.data) {
+      throw new Error(`No data returned from pub.dev API for ${packageName}`);
     }
+    
+    if (!response.data.latest) {
+      throw new Error(`No latest version information found for ${packageName}. Response: ${JSON.stringify(response.data).substring(0, 200)}`);
+    }
+    
+    if (!response.data.latest.version) {
+      throw new Error(`No version property found in latest for ${packageName}. Latest object: ${JSON.stringify(response.data.latest).substring(0, 200)}`);
+    }
+    
     return response.data.latest.version;
   } catch (error) {
-    throw new Error(`Failed to get latest version for ${packageName}: ${error}`);
+    if (axios.isAxiosError(error)) {
+      if (error.response) {
+        throw new Error(`Failed to get latest version for ${packageName}: HTTP ${error.response.status} - ${error.response.statusText}`);
+      } else if (error.request) {
+        throw new Error(`Failed to get latest version for ${packageName}: No response from server`);
+      }
+    }
+    throw new Error(`Failed to get latest version for ${packageName}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -202,8 +238,15 @@ async function checkRepository(
   githubToken?: string
 ): Promise<CheckResult> {
   try {
+    console.log(`  📥 Fetching pubspec.yaml from ${repository.url}...`);
     const pubspecContent = await getPubspecFromGitHub(repository.url, githubToken);
+    console.log(`  ✅ pubspec.yaml fetched (${pubspecContent.length} bytes)`);
+    
     const pubspec = yaml.parse(pubspecContent);
+    if (!pubspec) {
+      throw new Error('Failed to parse pubspec.yaml: result is null');
+    }
+    console.log(`  ✅ pubspec.yaml parsed successfully`);
     
     const currentFlutter = getFlutterVersionFromPubspec(pubspecContent) || latestFlutter;
     const flutter: FlutterVersion = {
@@ -212,25 +255,38 @@ async function checkRepository(
       updateAvailable: currentFlutter !== latestFlutter
     };
     
+    console.log(`  📦 Extracting dependencies...`);
     const dependencies = extractDependencies(pubspec, true);
+    console.log(`  ✅ Found ${dependencies.length} dependencies`);
+    
     const packages: PackageInfo[] = [];
     
     for (const dep of dependencies) {
-      if (dep.version === 'any' || dep.version.includes('git:') || dep.version.includes('path:')) {
+      if (!dep.version || dep.version === 'any') {
+        console.log(`  ⏭️  Skipping ${dep.name}: version is '${dep.version}'`);
+        continue;
+      }
+      if (typeof dep.version === 'string' && (dep.version.includes('git:') || dep.version.includes('path:'))) {
+        console.log(`  ⏭️  Skipping ${dep.name}: git/path dependency`);
         continue;
       }
       
       try {
+        console.log(`    🔍 Checking ${dep.name} (${dep.version})...`);
         const latest = await getLatestPackageVersion(dep.name);
+        const updateAvailable = isUpdateAvailable(dep.version, latest);
+        if (updateAvailable) {
+          console.log(`    🔄 ${dep.name}: ${dep.version} → ${latest}`);
+        }
         packages.push({
           name: dep.name,
           current: dep.version,
           latest,
-          updateAvailable: isUpdateAvailable(dep.version, latest)
+          updateAvailable
         });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`❌ Failed to check package ${dep.name} (current: ${dep.version}): ${errorMessage}`);
+        console.error(`    ❌ Failed to check package ${dep.name} (current: ${dep.version}): ${errorMessage}`);
         // エラーが発生したパッケージも結果に含める（エラー情報付き）
         packages.push({
           name: dep.name,
