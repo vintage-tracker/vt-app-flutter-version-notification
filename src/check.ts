@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as yaml from 'yaml';
 import { WebClient } from '@slack/web-api';
 import semver from 'semver';
+import ExcelJS from 'exceljs';
 
 interface Repository {
   name: string;
@@ -319,6 +320,85 @@ async function checkRepository(
 }
 
 /**
+ * Excelファイルを生成
+ */
+async function generateExcelFile(results: CheckResult[]): Promise<Buffer> {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('依存関係チェック結果');
+  
+  // ヘッダー行
+  worksheet.columns = [
+    { header: 'リポジトリ', key: 'repository', width: 20 },
+    { header: 'パッケージ名', key: 'package', width: 30 },
+    { header: '現在のバージョン', key: 'current', width: 20 },
+    { header: '最新バージョン', key: 'latest', width: 20 },
+    { header: '更新可能', key: 'updateAvailable', width: 12 },
+    { header: 'Flutterバージョン', key: 'flutter', width: 25 }
+  ];
+  
+  // ヘッダーのスタイル設定
+  worksheet.getRow(1).font = { bold: true };
+  worksheet.getRow(1).fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE0E0E0' }
+  };
+  
+  let rowNumber = 2;
+  
+  for (const result of results) {
+    if (result.error) {
+      worksheet.addRow({
+        repository: result.repository.name,
+        package: 'エラー',
+        current: result.error,
+        latest: '',
+        updateAvailable: '',
+        flutter: ''
+      });
+      worksheet.getRow(rowNumber).font = { color: { argb: 'FFFF0000' } };
+      rowNumber++;
+      continue;
+    }
+    
+    // Flutterバージョン情報
+    if (result.flutter.updateAvailable) {
+      worksheet.addRow({
+        repository: result.repository.name,
+        package: 'Flutter SDK',
+        current: result.flutter.current,
+        latest: result.flutter.latest,
+        updateAvailable: 'はい',
+        flutter: `${result.flutter.current} → ${result.flutter.latest}`
+      });
+      worksheet.getRow(rowNumber).font = { color: { argb: 'FFFF6600' } };
+      rowNumber++;
+    }
+    
+    // パッケージ情報
+    for (const pkg of result.packages) {
+      worksheet.addRow({
+        repository: result.repository.name,
+        package: pkg.name,
+        current: pkg.current,
+        latest: pkg.latest,
+        updateAvailable: pkg.updateAvailable ? 'はい' : 'いいえ',
+        flutter: ''
+      });
+      
+      if (pkg.updateAvailable) {
+        worksheet.getRow(rowNumber).font = { color: { argb: 'FF0066CC' } };
+      }
+      rowNumber++;
+    }
+  }
+  
+  // バッファに書き込み
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
+}
+
+/**
  * Slackに通知を送信
  */
 async function sendSlackNotification(
@@ -408,13 +488,41 @@ async function sendSlackNotification(
     ]
   });
   
-  await slack.chat.postMessage({
+  // メッセージを送信
+  const messageResponse = await slack.chat.postMessage({
     channel,
     text: hasUpdates ? 'Flutter依存関係更新通知' : 'Flutter依存関係チェック結果',
     blocks,
     username: 'Flutter Version Bot',
     icon_emoji: ':flutter:'
   });
+  
+  // Excelファイルを生成してスレッドに添付
+  try {
+    console.log('📊 Generating Excel file...');
+    const excelBuffer = await generateExcelFile(results);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const filename = `flutter-dependency-check-${timestamp}.xlsx`;
+    
+    const uploadOptions: any = {
+      channel_id: channel,
+      file: excelBuffer,
+      filename: filename,
+      title: 'Flutter依存関係チェック結果',
+      initial_comment: '📊 詳細なチェック結果をExcelファイルで添付しました。'
+    };
+    
+    // メッセージのタイムスタンプが存在する場合はスレッドに添付
+    if (messageResponse.ts) {
+      uploadOptions.thread_ts = messageResponse.ts;
+    }
+    
+    await slack.files.uploadV2(uploadOptions);
+    console.log('✅ Excel file uploaded to Slack thread');
+  } catch (error) {
+    console.error('❌ Failed to upload Excel file:', error instanceof Error ? error.message : String(error));
+    // Excelファイルのアップロードに失敗しても処理は続行
+  }
 }
 
 /**
