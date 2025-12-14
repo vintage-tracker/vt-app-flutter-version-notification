@@ -1,4 +1,3 @@
-import axios from 'axios';
 import { WebClient } from '@slack/web-api';
 import { CheckResult } from '../types/dependency-types';
 import { generateExcelFile } from './excel-report.service';
@@ -147,30 +146,48 @@ export async function sendSlackNotification(
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
     const filename = `flutter-dependency-check-${timestamp}.xlsx`;
     
+    console.log(`📎 Uploading file: ${filename} (${excelBuffer.length} bytes)`);
+    console.log(`📍 Channel: ${channel}, Thread: ${messageResponse.ts || 'N/A'}`);
+    
     // Step 1: アップロードURLを取得
+    console.log('🔗 Step 1: Getting upload URL...');
     const getUploadURLResponse = await slack.files.getUploadURLExternal({
       filename: filename,
       length: excelBuffer.length
     });
     
     if (!getUploadURLResponse.ok || !getUploadURLResponse.upload_url || !getUploadURLResponse.file_id) {
+      console.error('Upload URL response:', JSON.stringify(getUploadURLResponse, null, 2));
       throw new Error(getUploadURLResponse.error || 'Failed to get upload URL');
     }
     
     const uploadUrl = getUploadURLResponse.upload_url;
     const fileId = getUploadURLResponse.file_id;
+    console.log(`✅ Got upload URL and file ID: ${fileId}`);
     
-    // Step 2: ファイルをアップロード
-    await axios.put(uploadUrl, excelBuffer, {
+    // Step 2: ファイルをアップロード（fetchを使用）
+    console.log('📤 Step 2: Uploading file binary data...');
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      body: excelBuffer,
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         'Content-Length': excelBuffer.length.toString()
-      },
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
+      }
     });
     
+    if (!uploadResponse.ok) {
+      const responseText = await uploadResponse.text();
+      console.error('Upload response:', responseText);
+      throw new Error(
+        `Failed to upload file binary: ${uploadResponse.status} ${uploadResponse.statusText} - ${responseText}`
+      );
+    }
+    
+    console.log('✅ File binary uploaded successfully');
+    
     // Step 3: アップロード完了を通知（thread_tsを直接指定）
+    console.log('🎯 Step 3: Completing upload...');
     const completeUploadOptions: any = {
       files: [{
         id: fileId,
@@ -188,12 +205,19 @@ export async function sendSlackNotification(
     const completeUploadResponse = await slack.files.completeUploadExternal(completeUploadOptions);
     
     if (!completeUploadResponse.ok) {
+      console.error('Complete upload response:', JSON.stringify(completeUploadResponse, null, 2));
       throw new Error(completeUploadResponse.error || 'Failed to complete upload');
     }
     
-    console.log('✅ Excel file uploaded to Slack thread');
-  } catch (error) {
-    console.error('❌ Failed to upload Excel file:', error instanceof Error ? error.message : String(error));
+    console.log(`✅ File upload completed successfully: ${filename}`);
+  } catch (error: any) {
+    console.error(`❌ File upload error:`, error.message);
+    if (error.data) {
+      console.error('Upload error data:', JSON.stringify(error.data, null, 2));
+    }
+    if (error.response) {
+      console.error('Upload error response:', JSON.stringify(error.response, null, 2));
+    }
     // Excelファイルのアップロードに失敗しても処理は続行
   }
 }
